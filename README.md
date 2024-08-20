@@ -7,7 +7,7 @@ The Guidance title should be consistent with the title established first in Alch
 This title correlates exactly to the Guidance it’s linked to, including its corresponding sample code repository. 
 
 
-## Table of Contents (required)
+## Table  of Contents (required)
 
 List the top-level sections of the README template, along with a hyperlink to the specific section.
 

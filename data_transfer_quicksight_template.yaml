@@ -1,0 +1,166 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Template creates QuickSight Athena Datasource, Dataset and Dashboard for AWS Data transfer'
+Parameters:
+  CURAthenaDatabaseName:
+    Type: String
+    Description: Cost ans Usage report Athena database name.
+  QuickSightUserArn:
+    Type: String
+    Description: Amazon QuickSight current logged in user's ARN
+    Default: ''
+Resources:
+  # Creates a datasource for athena.
+  DataTransferAthenaDatasource:
+    Type: AWS::QuickSight::DataSource
+    Properties:
+      Type: ATHENA
+      DataSourceId: myathena-datasource-datatransfer
+      AwsAccountId: !Ref AWS::AccountId
+      DataSourceParameters: 
+          AthenaParameters:
+            "WorkGroup": "primary"
+      Name: DataTransferDataset
+      SslProperties: 
+        DisableSsl: false
+  # Creates Athena dataset for Data transfer dashboard
+  DataTransferAthenaDataset:
+    Type: AWS::QuickSight::DataSet
+    Properties: 
+      AwsAccountId: !Ref AWS::AccountId
+      Name: data_transfer_view
+      DataSetId: dt-athena-summary-datasetid-01
+      ImportMode: SPICE
+      PhysicalTableMap:
+        DTPhysicalTableMap123:
+          RelationalTable:
+            DataSourceArn: !GetAtt DataTransferAthenaDatasource.Arn
+            Catalog: "AwsDataCatalog"
+            Schema: !Ref CURAthenaDatabaseName
+            Name: "data_transfer_view"
+            InputColumns:
+            - Name: product_family
+              Type: STRING
+            - Name: product_servicecode
+              Type: STRING
+            - Name: product_servicename
+              Type: STRING
+            - Name: product_code
+              Type: STRING
+            - Name: usage_date
+              Type: DATETIME
+            - Name: billing_period
+              Type: DATETIME
+            - Name: payer_account_id
+              Type: STRING
+            - Name: linked_account_id
+              Type: STRING
+            - Name: product_name
+              Type: STRING
+            - Name: charge_type
+              Type: STRING
+            - Name: operation
+              Type: STRING
+            - Name: region
+              Type: STRING
+            - Name: usage_type
+              Type: STRING
+            - Name: from_location
+              Type: STRING
+            - Name: to_location
+              Type: STRING
+            - Name: resource_id
+              Type: STRING
+            - Name: tbs
+              Type: DECIMAL
+            - Name: usage_quantity
+              Type: DECIMAL
+            - Name: blended_cost
+              Type: DECIMAL
+            - Name: unblended_cost
+              Type: DECIMAL
+            - Name: public_cost
+              Type: DECIMAL
+            - Name: blended_rate
+              Type: STRING
+            - Name: unblended_rate
+              Type: STRING
+            - Name: public_ondemand_rate
+              Type: STRING
+            - Name: data_transfer_type
+              Type: STRING
+      LogicalTableMap:
+        DTLogicalTableMap123:
+          Alias: "data_transfer_view"
+          Source: 
+            PhysicalTableId: DTPhysicalTableMap123
+          DataTransforms:
+            - ProjectOperation:
+                ProjectedColumns:
+                  - product_family
+                  - product_servicecode
+                  - product_servicename
+                  - product_code
+                  - usage_date
+                  - billing_period
+                  - payer_account_id
+                  - linked_account_id
+                  - product_name
+                  - charge_type
+                  - operation
+                  - region
+                  - usage_type
+                  - from_location
+                  - to_location
+                  - resource_id
+                  - tbs
+                  - usage_quantity
+                  - blended_cost
+                  - unblended_cost
+                  - public_cost
+                  - blended_rate
+                  - unblended_rate
+                  - public_ondemand_rate
+                  - data_transfer_type
+      Permissions:
+        - Principal: !Ref QuickSightUserArn
+          Actions:
+            - "quicksight:UpdateDataSetPermissions"
+            - "quicksight:DescribeDataSet"
+            - "quicksight:DescribeDataSetPermissions"
+            - "quicksight:PassDataSet"
+            - "quicksight:DescribeIngestion"
+            - "quicksight:ListIngestions"
+            - "quicksight:UpdateDataSet"
+            - "quicksight:DeleteDataSet"
+            - "quicksight:CreateIngestion"
+            - "quicksight:CancelIngestion"
+  # creates QuickSight Datatransfer dashboard
+  DataTransferQuickSightDashboard:
+    Type: AWS::QuickSight::Dashboard
+    DependsOn: DataTransferAthenaDataset
+    Properties:
+      AwsAccountId: !Ref AWS::AccountId
+      DashboardId: 'data_transfer_analysis_dashboard'
+      Name: 'Datatransfer QuickSight dashboard created by CloudFormation teamplate'
+      Permissions:
+        - Principal: !Ref QuickSightUserArn
+          Actions:
+            - "quicksight:DescribeDashboard"
+            - "quicksight:ListDashboardVersions"
+            - "quicksight:UpdateDashboardPermissions"
+            - "quicksight:QueryDashboard"
+            - "quicksight:UpdateDashboard"
+            - "quicksight:DeleteDashboard"
+            - "quicksight:DescribeDashboardPermissions"
+            - "quicksight:UpdateDashboardPublishedVersion"
+      SourceEntity:
+        SourceTemplate:
+          DataSetReferences:
+            - DataSetPlaceholder: 'data_transfer_view'
+              DataSetArn: !GetAtt 'DataTransferAthenaDataset.Arn'
+          Arn: 'arn:aws:quicksight:us-east-1:869004330191:template/data-transfer-aga-est-cost-analysis-template-enhanced-v4'
+      VersionDescription: 'Datatransfe QuickSight Dashboard'
+Outputs:
+  StackName:
+    Description: 'Stack name'
+    Value: !Sub '${AWS::StackName}'

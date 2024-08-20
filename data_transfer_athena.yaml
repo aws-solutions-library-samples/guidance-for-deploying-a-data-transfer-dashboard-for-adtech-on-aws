@@ -1,0 +1,186 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Template creates Athena View for Datatransfer QuickSight dashboard'
+Parameters:
+  AthenaQueryResultBucketArn:
+    Type: String
+    Description: The ARN of the Amazon S3 bucket to which Athena query results are stored. e.g. 'arn:aws:s3:::aws-athena-query-results-us-east-1-XXXXXXXXXXXXXX'
+    Default: ''
+  AthenaResultsOutputLocation:
+    Type: String
+    Description: URI path of the Amazon S3 bucket where Athena query results are stored.
+  CURAthenaDatabaseName:
+    Type: String
+    Description: Athena database for Cost and Usage report.
+  CURAthenaTableName:
+    Type: String
+    Description: Athena table name for Cost and Usage report.
+  AthenaQueryResultAthenaQueryResultS3BucketRegion:
+    Type: String
+    Description: Athena query result S3 bucket region e.g. us-east-1
+
+  
+Resources:
+  # Creates an IAM role for lambda function execution permission
+  DataTransferAthenaIntegrationLambdaExecutorRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        Path: /
+        Policies:
+          - PolicyName: DTAthenaIntegrationLambdaExecutorPolicy
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - s3:ListBucket
+                    - logs:CreateLogGroup
+                  Resource:
+                    - !Sub '${AthenaQueryResultBucketArn}'
+                - Effect: Allow
+                  Action:
+                    - s3:PutObject
+                    - s3:GetBucketLocation
+                    - s3:GetObject
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource:
+                    - !Sub '${AthenaQueryResultBucketArn}'
+                    - !Sub '${AthenaQueryResultBucketArn}/*'
+                    - !Sub 'arn:aws:logs:${AthenaQueryResultAthenaQueryResultS3BucketRegion}:${AWS::AccountId}:log-group:/aws/lambda/datatransfer_lambda_handler:*'
+                - Effect: Allow
+                  Action:
+                    - athena:GetQueryResults
+                    - athena:StartQueryExecution
+                    - athena:CreateNamedQuery
+                    - athena:GetQueryExecution
+                  Resource:
+                    - !Sub 'arn:aws:athena:*:${AWS::AccountId}:workgroup/primary'
+                - Effect: Allow
+                  Action:
+                    - glue:GetDatabase
+                    - glue:GetTable
+                    - glue:CreateTable
+                  Resource:
+                    - !Sub 'arn:aws:glue:${AthenaQueryResultAthenaQueryResultS3BucketRegion}:${AWS::AccountId}:catalog'
+                    - !Sub 'arn:aws:glue:${AthenaQueryResultAthenaQueryResultS3BucketRegion}:${AWS::AccountId}:database/${CURAthenaDatabaseName}'
+                    - !Sub 'arn:aws:glue:${AthenaQueryResultAthenaQueryResultS3BucketRegion}:${AWS::AccountId}:table/${CURAthenaDatabaseName}/${CURAthenaTableName}'
+                    - !Sub 'arn:aws:glue:${AthenaQueryResultAthenaQueryResultS3BucketRegion}:${AWS::AccountId}:table/${CURAthenaDatabaseName}/data_transfer_view'
+        Tags:
+          -
+            Key: Name
+            Value: DataTransfer-Lambda-Role
+          -
+            Key: Purpose
+            Value: DataTransferCostandUsageDashboard
+
+  # Creates Athena View Data Transfer
+  DTAthenaViewFunction:
+      Type: AWS::Lambda::Function
+      Properties:
+        Description: Creates Athena view for Datatrasfer
+        Handler: index.lambda_handler
+        Runtime: python3.8
+        Role: !GetAtt 'DataTransferAthenaIntegrationLambdaExecutorRole.Arn'
+        Timeout: 60
+        Code:
+          ZipFile: |
+
+            import boto3
+            import datetime
+            import time
+            import re
+            import cfnresponse
+
+            # S3 and Athena client
+            s3 = boto3.client('s3')
+            athena = boto3.client('athena')
+
+            #Executing the athena query:
+            def run_query(query, database, s3_output):
+              try:
+                query_response = athena.start_query_execution(
+                QueryString=query,
+                QueryExecutionContext={
+                    'Database': database
+                    },
+                ResultConfiguration={
+                    'OutputLocation': s3_output,
+                    }
+                )
+                
+                execution_id=query_response['QueryExecutionId']
+                state = 'RUNNING'
+                while (state in ['RUNNING', 'QUEUED']):
+                    response = athena.get_query_execution(QueryExecutionId=execution_id)
+                    if 'QueryExecution' in response and 'Status' in response['QueryExecution'] and 'State' in \
+                            response['QueryExecution']['Status']:
+                        state = response['QueryExecution']['Status']['State']
+                        if state == 'FAILED':
+                            print(response)
+                            print("state == FAILED")
+                            print('Execution ID: ' + query_response['QueryExecutionId'])
+                            return False
+                        elif state == 'SUCCEEDED':
+                            s3_path = response['QueryExecution']['ResultConfiguration']['OutputLocation']
+                            filename = re.findall('.*\/(.*)', s3_path)[0]
+                            return filename
+                    time.sleep(1)
+              except Exception as e:
+                print("Query Exception:- ", e)
+
+              return query_response
+
+            #Function to get the regions and run the query on the captured regions
+            def lambda_handler(event, context):
+                errs = None
+                status = cfnresponse.SUCCESS
+                database = event["ResourceProperties"]["athenaIntegrations"][0]["database"]
+                s3_output = event["ResourceProperties"]["athenaIntegrations"][0]["s3_output"]
+                cur_table_name = event["ResourceProperties"]["athenaIntegrations"][0]["cur_table_name"]
+                if event["RequestType"] == 'Delete':
+                  status = cfnresponse.SUCCESS
+                  cfnresponse.send(event, context, status, errs, event["LogicalResourceId"])
+                else:
+                  try:                    
+                    query = str("CREATE OR REPLACE VIEW data_transfer_view AS SELECT  product_product_family product_family, product_servicecode, product_servicename, line_item_product_code product_code, line_item_usage_start_date usage_date, bill_billing_period_start_date billing_period, bill_payer_account_id payer_account_id, line_item_usage_account_id linked_account_id, product_product_name product_name, line_item_line_item_type charge_type, line_item_operation operation, product_region region, line_item_usage_type usage_type, product_from_location from_location, product_to_location to_location, line_item_resource_id resource_id, (sum((CASE WHEN (line_item_line_item_type = 'Usage') THEN line_item_usage_amount ELSE 0 END)) / 1024) TBs, sum((CASE WHEN (line_item_line_item_type = 'Usage') THEN line_item_usage_amount ELSE 0 END)) usage_quantity, sum(line_item_blended_cost) blended_cost, sum(line_item_unblended_cost) unblended_cost, sum(pricing_public_on_demand_cost) public_cost, line_item_blended_rate blended_rate, line_item_unblended_rate unblended_rate, pricing_public_on_demand_rate public_ondemand_rate, product_transfer_type data_transfer_type FROM " + database + "." + cur_table_name + " WHERE (((((line_item_usage_type LIKE '%Bytes%') AND (((line_item_usage_type LIKE '%In%')	OR (line_item_usage_type LIKE '%Out%') )	OR (line_item_usage_type LIKE '%Regional%')))	AND (((product_from_location = '') OR (product_from_location LIKE '%(%') ) OR (product_from_location_type = 'AWS Edge Location'))) AND (line_item_line_item_type IN ('PrivateRateDiscount', 'Usage', 'EdpDiscount')))	AND ((((year = format_datetime(current_timestamp, 'YYYY')) AND (month = format_datetime(current_timestamp, 'MM'))) OR ((year = format_datetime((date_trunc('month', current_timestamp) - INTERVAL '3' MONTH ), 'YYYY'))	AND ((month = format_datetime((date_trunc('month', current_timestamp) - INTERVAL '3' MONTH), 'MM') or month = format_datetime((date_trunc('month', current_timestamp) - INTERVAL '3' MONTH), 'M')))) OR ((year = format_datetime((date_trunc('month', current_timestamp) - INTERVAL '2' MONTH), 'YYYY'))	AND ((month = format_datetime((date_trunc('month', current_timestamp) - INTERVAL '2' MONTH), 'MM')) Or (month = format_datetime((date_trunc('month', current_timestamp) - INTERVAL '2' MONTH), 'M')))))	OR ((year = format_datetime((date_trunc('month', current_timestamp) - INTERVAL '1' MONTH), 'YYYY')) AND ((month = format_datetime((date_trunc('month', current_timestamp) - INTERVAL '1' MONTH), 'MM'))	or (month = format_datetime((date_trunc('month', current_timestamp) - INTERVAL '1' MONTH), 'M')))))) GROUP BY line_item_product_code, line_item_usage_start_date, bill_billing_period_start_date, line_item_usage_account_id, bill_payer_account_id, product_product_name, line_item_line_item_type, line_item_operation, product_region, product_product_family, product_servicecode, product_servicename, line_item_usage_type, product_from_location, product_to_location, line_item_resource_id, line_item_blended_rate, product_transfer_type, product_usagetype, pricing_public_on_demand_cost, pricing_public_on_demand_rate, line_item_unblended_rate, line_item_unblended_cost, line_item_blended_cost")
+                    query_result=run_query(query, database, s3_output)
+                    status = cfnresponse.SUCCESS
+                  except Exception as e:
+                    print("Query Exception:- ", e)
+                    errs = e
+                    status = cfnresponse.FAILED
+                  finally:
+                    cfnresponse.send(event, context, status, errs, event["LogicalResourceId"])
+        Tags:
+          -
+            Key: Name
+            Value: DataTransfer-Lambda-Function
+          -
+            Key: Purpose
+            Value: WALabDataTransfer
+  # Creates an initializer trigger to Athena View lambda function invokation 
+  CreateAthenaViewInitializer:
+    Type: 'Custom::DTAthenaViewStartInitializer'
+    DependsOn:
+      - DTAthenaViewFunction
+    Properties:
+      ServiceToken: !GetAtt DTAthenaViewFunction.Arn
+      dbName: !Ref CURAthenaDatabaseName
+      service: datatransfer
+      athenaIntegrations:
+        - s3_output: !Ref AthenaResultsOutputLocation
+          database: !Ref CURAthenaDatabaseName
+          cur_table_name: !Ref CURAthenaTableName
+Outputs:
+  StackName:
+    Description: 'Stack name'
+    Value: !Sub '${AWS::StackName}'

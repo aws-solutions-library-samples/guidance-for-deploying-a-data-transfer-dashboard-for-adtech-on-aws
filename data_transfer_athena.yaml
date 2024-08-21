@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Template creates Athena View for Datatransfer QuickSight dashboard'
+Description: 'Template creates Athena View for Datatransfer QuickSight dashboard (SO9477)'
 Parameters:
   AthenaQueryResultBucketArn:
     Type: String

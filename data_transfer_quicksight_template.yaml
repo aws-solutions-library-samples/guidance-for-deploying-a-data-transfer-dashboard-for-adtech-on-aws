@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Template creates QuickSight Athena Datasource, Dataset and Dashboard for AWS Data transfer'
+Description: 'Template creates QuickSight Athena Datasource, Dataset and Dashboard for AWS Data transfer (SO9477)'
 Parameters:
   CURAthenaDatabaseName:
     Type: String
